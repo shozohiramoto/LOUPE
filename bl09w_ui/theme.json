@@ -1,0 +1,53 @@
+{
+  "schema": "bl09w.ui.theme",
+  "version": "1.0.0",
+  "name": "BL09W Instrument Classic Dark",
+  "palette": {
+    "background": "#192331",
+    "header": "#25374D",
+    "panel": "#27384E",
+    "panel_raised": "#33465E",
+    "canvas": "#0B111A",
+    "border": "#566A80",
+    "text": "#F2F5FA",
+    "text_secondary": "#C5D0DE",
+    "text_muted": "#A9B8C9",
+    "accent": "#518DBB",
+    "accent_hover": "#66A6D2",
+    "accent_pressed": "#397AA9",
+    "warning": "#D59A38",
+    "error": "#D64444",
+    "success": "#338A55",
+    "stop": "#D64444",
+    "start": "#338A55",
+    "disabled": "#475364",
+    "disabled_text": "#BEC5CF",
+    "roi": "#65B5FF",
+    "roi_handle": "#FFE17A",
+    "profile": "#27B5E9"
+  },
+  "typography": {
+    "ui_font": "Segoe UI",
+    "numeric_font": "Consolas",
+    "base_pt": 10,
+    "heading_pt": 12,
+    "caption_pt": 9
+  },
+  "metrics": {
+    "space_small_px": 4,
+    "space_medium_px": 8,
+    "space_large_px": 12,
+    "control_min_height_px": 28,
+    "primary_min_height_px": 38,
+    "border_radius_px": 3
+  },
+  "interaction": {
+    "wheel": "image zoom; no unintended motor jog",
+    "space_drag": "pan image only",
+    "fit": "show entire image",
+    "contrast": ["AUTO", "FULL", "W-", "W+", "L-", "L+"],
+    "stop_is_reserved_for_hardware": true,
+    "numeric_changes_need_visible_feedback": true,
+    "iq_motion_requires_existing_interlocks": true
+  }
+}

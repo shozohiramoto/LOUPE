@@ -1,0 +1,119 @@
+/* UI Standard 1.0.0. This stylesheet intentionally avoids QGraphicsItem APIs. */
+QMainWindow, QDialog, QWidget {
+    background-color: #192331;
+    color: #F2F5FA;
+    font-family: "Segoe UI";
+    font-size: 10pt;
+}
+QLabel { color: #F2F5FA; }
+QPushButton {
+    color: #F2F5FA;
+    background-color: #33465E;
+    border: 1px solid #566A80;
+    border-radius: 3px;
+    min-height: 28px;
+    padding: 2px 7px;
+}
+QPushButton:hover { background-color: #518DBB; }
+QPushButton:pressed { background-color: #397AA9; }
+QPushButton:disabled {
+    background-color: #475364;
+    color: #BEC5CF;
+    border-color: #566A80;
+}
+QPushButton:focus { border: 2px solid #66A6D2; }
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QPlainTextEdit {
+    color: #F2F5FA;
+    background-color: #27384E;
+    border: 1px solid #566A80;
+    border-radius: 3px;
+    selection-background-color: #518DBB;
+    selection-color: #F2F5FA;
+    min-height: 25px;
+    padding: 2px 4px;
+}
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus,
+QTextEdit:focus, QPlainTextEdit:focus { border: 1px solid #66A6D2; }
+QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled,
+QComboBox:disabled { color: #BEC5CF; background-color: #475364; }
+QComboBox QAbstractItemView {
+    color: #F2F5FA;
+    background-color: #27384E;
+    selection-background-color: #518DBB;
+}
+QCheckBox { color: #F2F5FA; spacing: 5px; }
+QMenuBar { background-color: #25374D; color: #F2F5FA; }
+QMenuBar::item:selected { background-color: #518DBB; }
+QMenu { background-color: #27384E; color: #F2F5FA; border: 1px solid #566A80; }
+QMenu::item:selected { background-color: #518DBB; }
+QStatusBar { background-color: #25374D; color: #C5D0DE; }
+QToolTip {
+    background-color: #33465E;
+    color: #F2F5FA;
+    border: 1px solid #566A80;
+    padding: 4px;
+}
+QSlider::groove:horizontal {
+    height: 5px; background-color: #475364; border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    width: 12px; margin: -5px 0; background-color: #66A6D2;
+    border: 1px solid #F2F5FA; border-radius: 6px;
+}
+QScrollBar:horizontal { height: 8px; background-color: #192331; }
+QScrollBar:vertical { width: 8px; background-color: #192331; }
+QScrollBar::handle { background-color: #566A80; border-radius: 3px; }
+/* Object-specific semantic classes only; normal deletion must never look like hardware STOP. */
+QPushButton#BL09W_HardwareStop { background-color: #D64444; color: white; }
+QPushButton#BL09W_HardwareStart { background-color: #338A55; color: white; }
+
+/* Avoid clipping the last few pixels of combo boxes on Windows scaling. */
+QComboBox { padding-right: 26px; }
+QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right;
+    width: 23px; border-left: 1px solid #566A80; }
+/* Pixel Size unit selector needs text space; global 26px right padding
+   made the compact 48px combo text viewport zero on Windows at high DPI. */
+QComboBox#LOUPE_PixelUnit {
+    padding-left: 7px;
+    padding-right: 19px;
+}
+QComboBox#LOUPE_PixelUnit::drop-down {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 17px;
+    border-left: 1px solid #566A80;
+}
+QMenu::item { padding: 6px 60px 6px 14px; }
+
+/* Auto Contrast stays highlighted while auto mode is enabled. */
+QPushButton#LOUPE_AutoContrast:checked { background-color: #2E6991; border-color: #66A6D2; color: #FFFFFF; }
+
+/* ID054: Orthogonal Preview and Native Section share VIEW-style
+   upper-right report/export actions; no docked Output panel. */
+QToolButton#LOUPE_OrthogonalReport,
+QPushButton#LOUPE_OrthogonalOutputButton {
+    color: #F2F5FA;
+    background-color: #33465E;
+    border: 1px solid #566A80;
+    border-radius: 3px;
+    padding: 4px 12px;
+    min-height: 32px;
+}
+QToolButton#LOUPE_OrthogonalReport:hover,
+QPushButton#LOUPE_OrthogonalOutputButton:hover {
+    background-color: #518DBB;
+}
+QToolButton#LOUPE_OrthogonalReport:pressed,
+QPushButton#LOUPE_OrthogonalOutputButton:pressed {
+    background-color: #397AA9;
+}
+QToolButton#LOUPE_OrthogonalReport:focus,
+QPushButton#LOUPE_OrthogonalOutputButton:focus {
+    border: 2px solid #66A6D2;
+}
+QToolButton#LOUPE_OrthogonalReport:disabled,
+QPushButton#LOUPE_OrthogonalOutputButton:disabled {
+    background-color: #475364;
+    color: #BEC5CF;
+    border-color: #566A80;
+}
