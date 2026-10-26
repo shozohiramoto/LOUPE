@@ -1,3 +1,42 @@
+## 0.9.8d-dev (2026-10-26)
+
+- Replaced the LOUPE app icon with the user-approved thick-stroke magnifier artwork (2026-10-25).
+- Cropped external white canvas to transparent pixels without redrawing the magnifier, preserving its original proportions.
+- Rebuilt PNG (256x256 RGBA) and Windows ICO (16/24/32/48/64/128/256 px).
+- Version/About/log/bug-report identity now reads 0.9.8d, and Windows build BAT has the corresponding name.
+- All v0.9.8c features and provisional ID098-19/20 safeguards remain unchanged; **native crash fix still requires Windows validation**.
+
+## 0.9.8c-dev (2026-10-25)
+
+- ID098-19: Native Section middle-drag pan independent from ROI mode.
+- ID098-20: Orthogonal Preview contiguous image buffers, staged logging,
+  worker-safe close, faulthandler fatal logs. Crash resolution not verified.
+- Retains v0.9.8b icon fix and relative linked view/RAM/HIS features.
+
+### v0.9.8b icon display hotfix (dev only)
+
+- Replace coarse 67px magnifier raster with clean circular 256px LOUPE asset,
+  with unchanged PHASE screenshot-based frame/gloss reference.
+- Smooth, high-DPI-aware About icon rendering; update ICO all sizes.
+- No fix claimed for Orthogonal Preview crashes (ID098-20).
+
+## v0.9.8b [Development] — 2026-10-25 (ID098-08a + PHASE-matched LOUPE icon)
+
+- Adjust Offsets ON/OFF is obvious in the toolbar: amber active button, ON text, VIEW 2–4 edit badges and plot border, Esc-to-exit without losing alignments.
+- Recreated only LOUPE's PNG/ICO assets to match the **actual PHASE UI screenshot's** black bezel, top-left metal gradient and square occupied size. PHASE asset unchanged. 256px PNG and seven ICO sizes.
+- Preserves v0.9.8 ID098-08/11/17, ID098-18 provisional crash diagnostics, ImageJ/Fiji UI cleanup.
+- Validation: 312 PASS / 15 SKIP on Linux without Qt. No Windows UI/exe smoke test yet.
+- See `docs/RELEASE_NOTES_0.9.8b-dev.md`.
+
+## v0.9.8 [Development] — 2026-10-25 (ID098-08, 11, 17)
+
+- ID098-08: Relative Linked View with selectable Adjust Offset mode, per-panel XY offsets, Reset Offsets, synchronized zoom and persisted comparison JSON offsets.
+- ID098-11: Live PC RAM use indicator and LOUPE process working set tooltip.
+- ID098-17: Read-only 8-/16-bit grayscale HiPic HIS stream browsing by frame, native TIFF export of current frame, bounded memory use. `output.log` angle/type pairing remains future work.
+- Retains existing ID098-18 Native Section crash diagnostic patch, ImageJ/Fiji label cleanup and new LOUPE icon; PHASE v0.2.0 stays unchanged.
+- Tests: 310 passed / 15 skipped in the headless environment. No Windows Qt GUI/EXE or 41 GiB source file check has yet been performed for this integrated build.
+- See `docs/RELEASE_NOTES_0.9.8-dev.md` for detailed scope and release gates.
+
 ## v0.9.7 [Development] — Native Section calibration correction (2026-10-20)
 
 - Editable Native Section XY calibration override (µm/px), independent of TIFF header.

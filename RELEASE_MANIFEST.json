@@ -1,0 +1,21 @@
+{
+  "application": "LOUPE",
+  "version": "0.9.8d",
+  "status": "Development",
+  "source_based_on": "LOUPE_v0.9.8c-dev_ID098-19_20_Source_20261025.zip",
+  "change": "Approved bold magnifier icon and development version updates; all v0.9.8c functionality unchanged",
+  "approved_icon_original": "docs/LOUPE_APPROVED_ICON_ORIGINAL_20261025.png",
+  "original_artwork_sha256": "5dd27cfaa2be3e93f96a63a604218bca86f61f4066c625888076a292331c85f3",
+  "png_sha256": "67c0a2d38a4fc321ec0359bc47dd863114199a60d8f4f016c1f5b6fb55e4cfcb",
+  "ico_sha256": "838d078a61829f47cfa6cfaa3b69aad20d6d3f33dd79fb30f505711ca139af0c",
+  "tests": {
+    "passed": 325,
+    "skipped": 15,
+    "environment": "Linux / Python (headless); Windows GUI not verified"
+  },
+  "release_limitations": [
+    "Orthogonal Preview native crash (ID098-20) not validated resolved on Windows",
+    "Native Section middle-drag (ID098-19) not verified on Windows",
+    "Licensing, institution permission require review prior to redistribution"
+  ]
+}

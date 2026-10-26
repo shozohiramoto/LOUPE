@@ -1,0 +1,136 @@
+--- v0.9.7/loupe/orthogonal/high_resolution.py
++++ ID098-18/loupe/orthogonal/high_resolution.py
+@@ -204,19 +204,12 @@
+         raise ValueError("read_mode must be auto, memmap or decode")
+     if mode != "decode":
+         try:
+-            arr = tifffile.memmap(path)
++            arr = tifffile.memmap(path, mode="r")
+             return arr, arr if isinstance(arr, np.memmap) else None
+         except (ValueError, TypeError, OSError):
+             if mode == "memmap":
+                 raise
+     return tifffile.imread(path), None
+-
+-
+-def _closed(memmap: Optional[np.memmap]) -> None:
+-    if memmap is not None:
+-        mm = getattr(memmap, "_mmap", None)
+-        if mm is not None:
+-            mm.close()
+ 
+ 
+ def extract_plane(series: CTSeries, *, plane: str, fixed_index: int,
+@@ -314,9 +307,10 @@
+             except (OSError, tifffile.TiffFileError) as exc:
+                 raise SeriesValidationError(f"Failed to decode {path.name}: {exc}") from exc
+             finally:
+-                if frame is not None:
+-                    del frame
+-                _closed(backing)
++                # The array owns its mmap. Releasing both references lets NumPy
++                # close the mapping after no outstanding ndarray views remain.
++                # Never call private _mmap.close() while the memmap is alive.
++                del frame, backing
+             stat = path.stat()
+             if (stat.st_size, stat.st_mtime_ns) != expected_signature:
+                 raise SeriesValidationError(f"CT source changed during extraction: {path.name}")
+--- v0.9.7/loupe/orthogonal/high_resolution_widget.py
++++ ID098-18/loupe/orthogonal/high_resolution_widget.py
+@@ -24,7 +24,7 @@
+ from ..io import display_limits
+ from ..profiles import sample_thick_line
+ from ..calibration_spin import CalibrationSpinBox
+-from ..diagnostics import log_action
++from ..diagnostics import log_action, logger
+ from .high_resolution import scan_series, extract_plane, ExtractionCancelled
+ from .scalebar import scale_bar_spec, scale_bar_label
+ from .report_provenance import orthogonal_provenance_lines
+@@ -426,6 +426,7 @@
+ 
+         def run():
+             try:
++                logger().info('[NATIVE_STAGE] job=%s scan.begin plane=%s z_count=%d', token, plane, stop-start)
+                 series=scan_series(paths, pixel_size_um=xy_um, cancelled=cancel.is_set,
+                     on_progress=lambda n,total:self._signals.progress.emit(token,'Scanning headers',n,total))
+                 if series.pixel_size_um is None and self._pixel_size_um is not None:
+@@ -433,23 +434,29 @@
+                     # original data. Quantitative intensity remains valid but
+                     # no physical dimensions are recorded in the TIFF.
+                     pass
++                logger().info('[NATIVE_STAGE] job=%s scan.done shape=%s dtype=%s', token, series.shape, series.dtype)
+                 result=extract_plane(series,plane=plane,fixed_index=native_idx,
+                     z_start=start,z_stop=stop,z_spacing_um=z_um,
+                     output_dir=temp_folder,cancelled=cancel.is_set,
+                     on_progress=lambda n,total:self._signals.progress.emit(token,'Extracting original pixels',n,total))
+                 if cancel.is_set():
+                     raise ExtractionCancelled('Stopped')
++                logger().info('[NATIVE_STAGE] job=%s extract.done output_shape=%s',token,result.shape)
+                 data=tifffile.imread(result.tiff_path)
++                logger().info('[NATIVE_STAGE] job=%s tiff.read.done shape=%s dtype=%s',token,data.shape,data.dtype)
+                 if cancel.is_set():
+                     raise ExtractionCancelled('Stopped')
+                 self._signals.completed.emit(token,result,data)
+             except ExtractionCancelled:
++                logger().info('[NATIVE_STAGE] job=%s cancelled', token)
+                 self._signals.failed.emit(token,'Stopped by operator',True)
+             except Exception as exc:
++                logger().exception('[NATIVE_STAGE] job=%s failed', token)
+                 self._signals.failed.emit(token,str(exc),False)
+-        self._pool.submit(run)
++        # Persist the request before the worker can start (or crash).
+         log_action('Native Section orthogonal requested',plane=plane,fixed_index=native_idx,
+                    z_start=start,z_stop=stop,frames=len(paths))
++        self._pool.submit(run)
+ 
+     def stop(self):
+         if self._cancel is not None and self._busy:
+@@ -470,11 +477,14 @@
+             self._discard_files(result)
+             self._on_failed(token,'Stopped by operator',True)
+             return
++        logger().info('[NATIVE_STAGE] job=%s gui.install.begin', token)
+         self._result=result
+         self._image_data=data
+         self._scale=(result.metadata.get('horizontal_spacing_um'), result.metadata.get('vertical_z_spacing_um'))
+         lower,upper=display_limits(data)
++        logger().info('[NATIVE_STAGE] job=%s gui.image.set.begin',token)
+         self.image.setImage(data,autoLevels=False,levels=(lower,upper))
++        logger().info('[NATIVE_STAGE] job=%s gui.image.set.done',token)
+         self.image.setRect(QtCore.QRectF(0,0,data.shape[1],data.shape[0]))
+         self.plot.getViewBox().autoRange(padding=0.015)
+         self._set_busy(False)
+@@ -484,7 +494,9 @@
+         self.report_menu.setEnabled(True)
+         self.png_action.setEnabled(True);self.pdf_action.setEnabled(True)
+         self._undo_stack=[];self._redo_stack=[]
++        logger().info('[NATIVE_STAGE] job=%s gui.roi.set.begin',token)
+         self.roi_layer.set_image(data)
++        logger().info('[NATIVE_STAGE] job=%s gui.roi.set.done',token)
+         self._update_measurement()
+         z0=result.metadata['z_start_zero_based_inclusive'];z1=result.metadata['z_stop_zero_based_exclusive']
+         self.details.setText(f"{result.metadata['plane']} · {result.metadata['fixed_axis']}="
+--- v0.9.7/loupe/diagnostics.py
++++ ID098-18/loupe/diagnostics.py
+@@ -116,6 +116,21 @@
+                 source=root/filename
+                 if source.exists():
+                     archive.writestr(target, sanitize(source.read_text(encoding='utf-8',errors='replace')))
++        if include_logs:
++            # The current session is usually a RESTART after a fatal Windows
++            # APPCRASH. Preserve the two previous sessions too (bounded).
++            old_logs = sorted(
++                (p for p in root.glob('LOUPE_*.log')
++                 if p.name != f'LOUPE_{SESSION}.log' and not p.stem.endswith('_errors')),
++                key=lambda p: p.stat().st_mtime, reverse=True,
++            )[:2]
++            for prior in old_logs:
++                for prior_file in (prior, prior.with_name(prior.stem + '_errors.log')):
++                    if prior_file.is_file():
++                        archive.writestr(
++                            'previous_sessions/' + prior_file.name,
++                            sanitize(prior_file.read_text(encoding='utf-8', errors='replace')),
++                        )
+         if include_environment:
+             env=(f'{release_identity()}\nUI Standard: {UI_STANDARD_VERSION}\n'
+                  f'OS: {platform.system()} {platform.release()}\nPython: {platform.python_version()}\n')

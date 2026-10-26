@@ -13,7 +13,8 @@ import sys
 
 from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
 from loupe.app_icon import icon_path
-from loupe.diagnostics import start_logging, close_logging, logger, log_action
+from loupe.diagnostics import (start_logging, close_logging, logger, log_action,
+                               start_fault_diagnostics, close_fault_diagnostics)
 from loupe.gui import MainWindow
 from loupe.ui_theme import apply_qt_theme
 from loupe.version import APP_VERSION
@@ -144,10 +145,12 @@ def main():
         QtWidgets.QMessageBox.warning(None, 'LOUPE already running', str(exc))
         return 1
     start_logging()
+    start_fault_diagnostics()
     sys.excepthook = _uncaught
     app.setWindowIcon(QtGui.QIcon(str(icon_path())))
     theme_version = apply_qt_theme(app)
     logger().info('BL09W UI Standard v%s applied', theme_version)
+    app.aboutToQuit.connect(close_fault_diagnostics)
     app.aboutToQuit.connect(close_logging)
     manager.new_window()
     return app.exec()
