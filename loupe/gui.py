@@ -34,6 +34,9 @@ from .imagej_bridge import (heap_from_cfg, physical_available, inspect_sequence,
 from .fiji_rmi import send_macro_to_existing_fiji
 from .layout import density_for_window, horizontal_cells
 from .cache import FrameCache
+from .his_format import parse_his_ref, source_path
+from .relative_view import validate_offsets, move_range, anchor_range, center_difference
+from .ram_monitor import memory_snapshot, format_ram
 import numpy as np
 
 class Signals(QtCore.QObject):
@@ -48,6 +51,22 @@ class AnnotationViewBox(pg.ViewBox):
 
     def mouseDragEvent(self, event, axis=None):
         owner = self.owner
+        # ID098-19: in Native Section, middle-button drag always pans, even
+        # when a Line/Rectangle/Count ROI tool is selected. ViewBox handles
+        # this in *scene* coordinates so zoom, inverted Y and aspect lock are
+        # respected. Never alter a quantitative ROI on middle-button drag.
+        host = getattr(owner, 'parent_window', None)
+        if (event.button() == QtCore.Qt.MouseButton.MiddleButton
+                and getattr(host, 'measure_viewbox', None) is self):
+            last = self.mapSceneToView(event.lastScenePos())
+            now = self.mapSceneToView(event.scenePos())
+            self.translateBy(x=last.x()-now.x(), y=last.y()-now.y())
+            if event.isStart():
+                self.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
+            if event.isFinish():
+                self.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+            event.accept()
+            return
         if owner is not None and owner.parent_window is not None:
             owner.parent_window.set_active_panel(owner)
             owner.plot.setFocus(QtCore.Qt.FocusReason.MouseFocusReason)
@@ -59,6 +78,21 @@ class AnnotationViewBox(pg.ViewBox):
             shift = bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier)
             owner.annotation_drag((start.x(), start.y()), (end.x(), end.y()), event.isFinish(), shift)
             event.accept()
+            return
+        adjust = getattr(host, 'adjust_offset', None)
+        panels = getattr(host, 'panels', ())
+        if (owner is not None and adjust is not None and adjust.isChecked()
+                and panels and owner is not panels[0]
+                and owner.current is not None and not owner.loading
+                and event.button() == QtCore.Qt.MouseButton.LeftButton
+                and not owner.parent_window.space_pan_active):
+            # Only this panel pans while correcting its alignment offset.
+            window = owner.parent_window
+            window._offset_dragging_panel = owner
+            try:
+                super().mouseDragEvent(event, axis=axis)
+            finally:
+                window._offset_dragging_panel = None
             return
         super().mouseDragEvent(event, axis=axis)
 
@@ -253,7 +287,7 @@ class ImagePanel(QtWidgets.QWidget):
         top = QtWidgets.QHBoxLayout()
         top.addWidget(QtWidgets.QLabel(f'<b>{name}</b>'))
         btn = QtWidgets.QPushButton('Open Image')
-        btn.setToolTip('Open a TIFF or supported BL09W .img image')
+        btn.setToolTip('Open a TIFF, BL09W IMG, or HiPic HIS projection sequence')
         btn.clicked.connect(self.open_dialog)
         top.addWidget(btn)
         outer.addLayout(top)
@@ -314,6 +348,16 @@ class ImagePanel(QtWidgets.QWidget):
         self.measure_viewbox.owner = self
         self.measure_viewbox.setMouseMode(pg.ViewBox.PanMode)
         self.plot = TiffDropPlotWidget(self, viewBox=self.measure_viewbox)
+        # ID098-08a: an unambiguous per-VIEW cue while alignment offsets
+        # are being adjusted. The badge never intercepts zoom/pan gestures.
+        self.plot.setObjectName('LOUPE_OffsetPlot')
+        self.plot.setProperty('adjustingOffset', False)
+        self.offset_edit_badge = QtWidgets.QLabel('OFFSET EDIT', self.plot)
+        self.offset_edit_badge.setObjectName('LOUPE_OffsetEditBadge')
+        self.offset_edit_badge.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.offset_edit_badge.move(12, 12)
+        self.offset_edit_badge.adjustSize()
+        self.offset_edit_badge.hide()
         self.plot.setFocusPolicy(QtCore.Qt.FocusPolicy.ClickFocus)
         self.plot.setMinimumWidth(0)
         self.plot.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -639,7 +683,7 @@ class ImagePanel(QtWidgets.QWidget):
             self.slice_slider.setValue(number)
 
     def open_dialog(self):
-        f, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Choose image', '', 'Images (*.tif *.tiff *.img);;TIFF (*.tif *.tiff);;BL09W IMG (*.img)')
+        f, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Choose image', '', 'Images (*.tif *.tiff *.img *.his);;TIFF (*.tif *.tiff);;BL09W IMG (*.img);;HiPic HIS (*.his)')
         if f:
             self.open_path(f)
 
@@ -673,7 +717,7 @@ class ImagePanel(QtWidgets.QWidget):
         if self.width_overlay is not None:
             self.plot.removeItem(self.width_overlay)
             self.width_overlay = None
-        log_action('Dataset opened',panel=self.display_name,file=Path(path).name,frames=len(self.files))
+        log_action('Dataset opened',panel=self.display_name,file=source_path(path).name,frames=len(self.files))
         self.request(initial)
 
     def jump(self, val):
@@ -778,6 +822,8 @@ class ImagePanel(QtWidgets.QWidget):
                 with QtCore.QSignalBlocker(spin):
                     spin.setValue(value)
         self.redraw_measurements()
+        if self.parent_window is not None:
+            self.parent_window._update_offset_graphics(self)
         self.update_scale_bar()
         self.refresh_levels()
         if self.profile_active:
@@ -790,7 +836,11 @@ class ImagePanel(QtWidgets.QWidget):
             self.fit_view()
         view_box.disableAutoRange()
         self.fit_on_next_image = False
-        label = f'{arr.shape[1]} × {arr.shape[0]} | {arr.dtype} | {Path(path).name}'
+        his_frame = parse_his_ref(path)
+        label = f'{arr.shape[1]} × {arr.shape[0]} | {arr.dtype} | {source_path(path).name}'
+        if his_frame:
+            label += f' | HIS frame {his_frame[1]+1}/{len(self.files)} (type unclassified)'
+
         if self._rotation_center_px is not None:
             label += f' | Rotation center: {self._rotation_center_px:g} px'
         self._full_status_text = label
@@ -814,7 +864,7 @@ class ImagePanel(QtWidgets.QWidget):
     def snapshot(self):
         vr=self.plot.getViewBox().viewRange()
         return {'side': self.objectName(),
-                'path':str(self.files[self.index.value()-1]) if self.files else None,
+                'path':str(source_path(self.files[self.index.value()-1])) if self.files else None,
                 'slice':self.index.value() if self.files else None,
                 'line':self.get_line() if self.roi else None,
                 'view_range': [[float(v) for v in axis] for axis in vr],
@@ -1148,6 +1198,8 @@ class ImagePanel(QtWidgets.QWidget):
             handle = MeasurementHandle(self,item['id'],role,x,y)
             self.plot.addItem(handle)
             self.edit_handles.append(handle)
+        if self.parent_window is not None:
+            self.parent_window._update_offset_graphics(self)
 
     def preview_geometry_edit(self, original, role, point, start, constrain=False):
         if self.current is None or self.loading:
@@ -1701,6 +1753,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.panel_container.setLayout(self.panel_grid)
         self._syncing = False
         self._syncing_view = False
+        self._offset_dragging_panel = None
+        self._view_offsets = [(0.0, 0.0) for _ in range(4)]
         self._syncing_profile_y = False
         self._setting_profile_ranges = False
         self._syncing_slices = False
@@ -1719,6 +1773,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.link_view = QtWidgets.QCheckBox('Linked view (zoom / pan)')
         self.link_view.setChecked(False)
         self.link_view.toggled.connect(self.link_view_toggled)
+        self.adjust_offset = QtWidgets.QPushButton('Adjust Offsets')
+        self.adjust_offset.setObjectName('LOUPE_AdjustOffsets')
+        self.adjust_offset.setCheckable(True)
+        self.adjust_offset.setEnabled(False)
+        self.adjust_offset.setToolTip('Enable to align VIEW 2–4 independently; linked zoom remains active.')
+        self.adjust_offset.toggled.connect(self.adjust_offset_toggled)
+        self.reset_offsets_button = QtWidgets.QPushButton('Reset Offsets')
+        self.reset_offsets_button.setToolTip('Remove all manual VIEW 2–4 alignment offsets')
+        self.reset_offsets_button.clicked.connect(self.reset_view_offsets)
         self.link_line = QtWidgets.QCheckBox('Linked line position')
         self.link_line.setChecked(False)
         self.link_line.toggled.connect(self.link_line_toggled)
@@ -1795,6 +1858,7 @@ class MainWindow(QtWidgets.QMainWindow):
         em=QtWidgets.QMenu(self.export_menu_button)
         em.addAction('Profile Data (CSV)…').triggered.connect(self.export_csv)
         em.addAction('ROI Measurements (CSV)…').triggered.connect(self.export_measurements)
+        em.addAction('Current HIS Frame (native TIFF)…').triggered.connect(self.export_current_his_frame)
         self.export_menu_button.setMenu(em)
         for button in (self.session_button,self.report_button,self.export_menu_button):
             self.primary_toolbar_row.addWidget(button)
@@ -1838,6 +1902,8 @@ class MainWindow(QtWidgets.QMainWindow):
         toolbar_layout.addLayout(self.link_toolbar_row)
         for checkbox in (self.link_slices,self.link_view,self.link_line,self.link_y):
             self.link_toolbar_row.addWidget(checkbox)
+        self.link_toolbar_row.addWidget(self.adjust_offset)
+        self.link_toolbar_row.addWidget(self.reset_offsets_button)
         self.link_toolbar_row.addStretch(1)
         self._links_wrapped=True
         central_layout.addWidget(toolbar)
@@ -1846,6 +1912,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.apply_panel_layout()
         self.setCentralWidget(central)
         self.statusBar().showMessage(f'LOUPE v{VERSION} — {APP_STATUS} | 1–4 horizontal views')
+        # Compact live RAM indicator, refreshed outside frame-loading threads.
+        self.ram_indicator = QtWidgets.QLabel('RAM —')
+        self.ram_indicator.setMinimumWidth(185)
+        self.ram_indicator.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        self.ram_indicator.setToolTip('PC RAM and LOUPE process memory; updated every 2 seconds')
+        self.ram_bar = QtWidgets.QProgressBar()
+        self.ram_bar.setRange(0,100)
+        self.ram_bar.setValue(0)
+        self.ram_bar.setTextVisible(False)
+        self.ram_bar.setFixedWidth(65)
+        self.ram_bar.setFixedHeight(11)
+        self.statusBar().addPermanentWidget(self.ram_indicator)
+        self.statusBar().addPermanentWidget(self.ram_bar)
+        self.ram_timer = QtCore.QTimer(self)
+        self.ram_timer.setInterval(2000)
+        self.ram_timer.timeout.connect(self.update_ram_indicator)
+        self.ram_timer.start()
+        self.update_ram_indicator()
         file_menu=self.menuBar().addMenu('File')
         self.new_window_action=file_menu.addAction('New Window')
         self.new_window_action.setShortcut(QtGui.QKeySequence('Ctrl+N'))
@@ -1885,6 +1969,12 @@ class MainWindow(QtWidgets.QMainWindow):
             shortcut.activated.connect(lambda step=step:self.keyboard_step_slice(step))
             self._keyboard_shortcuts.append(shortcut)
         QtWidgets.QApplication.instance().focusChanged.connect(self._shortcut_focus_changed)
+        # Esc exits the temporary offset-edit mode without resetting offsets.
+        # Do not consume Esc while a modal dialog is open.
+        escape_offset = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_Escape), self)
+        escape_offset.setContext(QtCore.Qt.ShortcutContext.WindowShortcut)
+        escape_offset.activated.connect(self.exit_offset_edit_mode)
+        self._keyboard_shortcuts.append(escape_offset)
         self._shortcut_focus_changed(None, QtWidgets.QApplication.focusWidget())
 
     def open_new_window(self):
@@ -1909,9 +1999,16 @@ class MainWindow(QtWidgets.QMainWindow):
         msg = QtWidgets.QMessageBox(self)
         msg.setWindowTitle('About LOUPE')
         msg.setWindowIcon(QtGui.QIcon(str(icon_path())))
-        msg.setIconPixmap(QtGui.QPixmap(str(icon_path())).scaled(
-            128,128, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-            QtCore.Qt.TransformationMode.FastTransformation))
+        # Preserve round contours at fractional Windows display scaling.
+        # FastTransformation made the previous 67px pixel-art magnifier
+        # visibly blocky/distorted when displayed around 128 logical pixels.
+        dpr = max(1.0, float(msg.devicePixelRatioF()))
+        native_px = max(1, round(128 * dpr))
+        about_pixmap = QtGui.QPixmap(str(icon_path())).scaled(
+            native_px, native_px, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation)
+        about_pixmap.setDevicePixelRatio(dpr)
+        msg.setIconPixmap(about_pixmap)
         msg.setText(f'<b>LOUPE</b><br><span style="color:#9aa8b8">Version {VERSION} · {APP_STATUS}</span>')
         msg.setInformativeText(
             'Photon Science Innovation Center (PhoSIC)\n'
@@ -1920,7 +2017,7 @@ class MainWindow(QtWidgets.QMainWindow):
             f'Git Commit: {build["git_commit"]}\n\n'
             '1–4 VIEW image comparison · TIFF / IMG\n'
             'ROI measurements, line profiles and counting\n'
-            'Orthogonal Preview / Native Section · Fiji integration\n'
+            'Orthogonal Preview / Native Section · ImageJ/Fiji integration\n'
             'PNG / PDF reports and quantitative TIFF export')
         msg.exec()
 
@@ -2024,6 +2121,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return {'settings':{'profile_mode':self.profile_mode.isChecked(),
                             'width_px':self.profile_width.value(),
                             'linked_view':self.link_view.isChecked(),
+                            'view_offsets_px':[[float(x),float(y)] for x,y in self._view_offsets],
                             'linked_line':self.link_line.isChecked(),
                             'linked_profile_y':self.link_y.isChecked(),
                             'linked_slices':self.link_slices.isChecked(),
@@ -2041,7 +2139,7 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QMessageBox.warning(self,title,str(err))
 
     def _loaded_sources(self):
-        return [str(p.files[p.index.value()-1]) for p in self.visible_panels()
+        return [str(source_path(p.files[p.index.value()-1])) for p in self.visible_panels()
                 if p.files and 1 <= p.index.value() <= len(p.files)]
 
     def _export_name(self, kind, ext):
@@ -2066,6 +2164,33 @@ class MainWindow(QtWidgets.QMainWindow):
             rollback_empty(path)
             raise
         return path
+
+    def export_current_his_frame(self):
+        """Export a single native, unmodified grayscale HIS frame, never the whole 41GB stack."""
+        panel=self._active_panel
+        if panel is None or panel.current is None or not panel.files or panel.loading:
+            self.report_error('Export HIS frame','Select a loaded HIS frame first.')
+            return
+        parsed=parse_his_ref(panel.files[panel.index.value()-1])
+        if parsed is None:
+            self.report_error('Export HIS frame','The selected VIEW is not a HIS series.')
+            return
+        source,number=parsed
+        suggested=source.with_name(f'{source.stem}_frame_{number+1:06d}.tif')
+        filename,_=QtWidgets.QFileDialog.getSaveFileName(self,
+            'Export original HIS frame as TIFF',str(suggested),'TIFF (*.tif *.tiff)')
+        if not filename:return
+        try:
+            import tifffile
+            image=np.asarray(panel.current)
+            if image.dtype not in (np.uint8,np.uint16) or image.ndim!=2:
+                raise ValueError('Unsupported HIS pixel type for TIFF export')
+            dest=self._export_with_reservation(filename,
+                lambda p:tifffile.imwrite(p,image,photometric='minisblack'))
+            self.statusBar().showMessage(f'Native frame TIFF saved: {dest}',12000)
+            log_action('Native HIS frame TIFF exported',frame=number+1,file=dest.name)
+        except Exception as exc:
+            self.report_error('Export HIS frame failed',exc)
 
     def export_csv(self):
         if any(p.loading for p in self.visible_panels()):
@@ -2112,6 +2237,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.bookmarks=[b for b in settings.get('bookmarks',[]) if isinstance(b,dict)][:1000]
             legacy_cal=settings.get('calibration')
             # Disable links during asynchronous restore so each panel gets its own state.
+            self._view_offsets=validate_offsets(settings.get('view_offsets_px'))
             for control in (self.link_view,self.link_line,self.link_y,self.link_slices):control.setChecked(False)
             self.profile_width.setValue(int(settings.get('width_px',1)))
             source=settings.get('profile_source','line')
@@ -2142,6 +2268,8 @@ class MainWindow(QtWidgets.QMainWindow):
         for control,key in ((self.link_view,'linked_view'),(self.link_line,'linked_line'),
                             (self.link_y,'linked_profile_y'),(self.link_slices,'linked_slices')):
             control.blockSignals(True);control.setChecked(bool(settings.get(key,False)));control.blockSignals(False)
+        if self.link_view.isChecked():
+            self.link_view_toggled(True)
         self.statusBar().showMessage('Comparison restored',12000)
 
     def _report_inputs(self, kind):
@@ -2199,10 +2327,10 @@ class MainWindow(QtWidgets.QMainWindow):
         state=self.state()
         if not any(p.get('path') for p in state['panels']):
             self.report_error('ImageJ macro','Load a TIFF first.');return
-        if any(Path(p['path']).suffix.lower() == '.img' for p in state['panels'] if p.get('path')):
+        if any(Path(p['path']).suffix.lower() in ('.img','.his') for p in state['panels'] if p.get('path')):
             self.report_error('ImageJ macro',
                 'The ImageJ macro exporter currently supports TIFF datasets only. '
-                'Convert IMG to TIFF before exporting an ImageJ macro.')
+                'Export the needed HIS frame as TIFF (or convert IMG) before creating the macro.')
             return
         path,_=QtWidgets.QFileDialog.getSaveFileName(self,'Export ImageJ/Fiji macro',self._export_name('ImageJ','ijm'),'ImageJ Macro (*.ijm)')
         if not path:return
@@ -2226,22 +2354,112 @@ class MainWindow(QtWidgets.QMainWindow):
         if active:
             self.refresh_y_axes()
 
+    def update_ram_indicator(self):
+        try:
+            label,tip,percent=format_ram(*memory_snapshot())
+            self.ram_indicator.setText(label)
+            self.ram_indicator.setToolTip(tip)
+            self.ram_bar.setToolTip(tip)
+            if percent is not None:
+                self.ram_bar.setValue(percent)
+                self.ram_bar.setFormat(f'{percent}%')
+                # Warning is only an indicator, never an automatic memory action.
+                self.ram_bar.setStyleSheet('QProgressBar::chunk { background: #ce854c; }' if percent>=90 else '')
+        except Exception as exc:
+            logger().warning('RAM indicator unavailable: %s',exc)
+
+    def exit_offset_edit_mode(self):
+        # Esc stops editing while retaining each VIEW's registered offset.
+        if (self.adjust_offset.isChecked()
+                and QtWidgets.QApplication.activeModalWidget() is None):
+            self.adjust_offset.setChecked(False)
+
+    def adjust_offset_toggled(self, active):
+        if active and not self.link_view.isChecked():
+            self.adjust_offset.setChecked(False)
+            return
+        # QSS uses the :checked state. Visible ON text also covers color-blind
+        # users and remote desktops where accent colors may be inaccurate.
+        self.adjust_offset.setText('✓ Adjust Offsets: ON' if active else 'Adjust Offsets')
+        self.adjust_offset.setAccessibleName('Offset adjustment ON' if active else 'Offset adjustment OFF')
+        self.adjust_offset.setToolTip(
+            'OFFSET EDIT ON: drag VIEW 2–4 separately; Esc to finish. Zoom stays linked.'
+            if active else 'Enable manual alignment of VIEW 2–4 with synchronized zoom and pan.')
+        if active:
+            self.select_pan_tool()
+            self.statusBar().showMessage('OFFSET EDIT ON — drag VIEW 2–4 to align | wheel zoom stays linked | Esc to finish',0)
+        else:
+            self.statusBar().showMessage('Offset adjustment OFF — your VIEW alignment has been kept.',8000)
+        for panel in self.panels:
+            self._update_offset_graphics(panel)
+
+    def _update_offset_graphics(self, panel):
+        # An edit cue should only appear on loaded VIEW 2–4. Avoid showing it
+        # in VIEW 1: VIEW 1 remains the alignment reference.
+        enabled=(self.adjust_offset.isChecked()
+                 and panel is not self.panels[0] and panel.current is not None
+                 and panel in self.visible_panels())
+        panel.offset_edit_badge.setVisible(enabled)
+        if enabled:
+            panel.offset_edit_badge.raise_()
+        if panel.plot.property('adjustingOffset') != enabled:
+            panel.plot.setProperty('adjustingOffset', enabled)
+            # Qt does not automatically re-evaluate dynamic-property selectors.
+            style = panel.plot.style()
+            style.unpolish(panel.plot)
+            style.polish(panel.plot)
+            panel.plot.update()
+        # While adjusting offsets, ROI items must not consume left drags.
+        buttons=(QtCore.Qt.MouseButton.NoButton if enabled else
+                 QtCore.Qt.MouseButton.LeftButton)
+        for item in list(panel.shape_items.values())+list(panel.edit_handles):
+            try: item.setAcceptedMouseButtons(buttons)
+            except RuntimeError: pass
+        if panel.roi is not None:
+            if enabled:panel.roi.setVisible(False)
+            else:panel.update_profile_roi_visibility()
+
+    def reset_view_offsets(self):
+        self._view_offsets = [(0.0, 0.0) for _ in range(4)]
+        if self.link_view.isChecked():
+            reference=self.panels[0]
+            if reference.current is not None:
+                self.view_changed(reference,reference.plot.getViewBox().viewRange())
+        self.statusBar().showMessage('View offsets reset',6000)
+
     def link_view_toggled(self, linked):
+        self.adjust_offset.setEnabled(linked)
+        if not linked and self.adjust_offset.isChecked():
+            self.adjust_offset.setChecked(False)
         if linked:
-            source=next((p for p in self.visible_panels() if p.current is not None),None)
+            source=self.panels[0] if self.panels[0].current is not None else next(
+                (p for p in self.visible_panels() if p.current is not None),None)
             if source:
                 self.view_changed(source,source.plot.getViewBox().viewRange())
 
     def view_changed(self, source, ranges):
         if self._syncing_view or not self.link_view.isChecked():
             return
-        if source not in self.visible_panels() or source.current is None:return
+        if source not in self.visible_panels() or source.current is None:
+            return
+        i=self.panels.index(source)
+        if self.adjust_offset.isChecked() and source is self._offset_dragging_panel and i>0:
+            reference=self.panels[0]
+            if reference.current is None:
+                return
+            offset=center_difference(ranges,reference.plot.getViewBox().viewRange())
+            if all(math.isfinite(v) for v in offset):
+                self._view_offsets[i]=offset
+            return
         self._syncing_view = True
         try:
-            # Linked views share exact source-pixel ranges.
-            for target in self.visible_panels():
+            # Common source-pixel zoom/pan with persistent per-view XY translations.
+            shared=anchor_range(ranges,self._view_offsets[i])
+            for j,target in enumerate(self.visible_panels()):
                 if target is source or target.current is None:continue
-                target.plot.getViewBox().setRange(xRange=ranges[0], yRange=ranges[1], padding=0)
+                translated=move_range(shared,self._view_offsets[j])
+                target.plot.getViewBox().setRange(xRange=translated[0],
+                    yRange=translated[1],padding=0)
                 target.plot.getViewBox().disableAutoRange()
         finally:
             self._syncing_view = False
@@ -2477,7 +2695,7 @@ class MainWindow(QtWidgets.QMainWindow):
             previous or str(Path.home()),'Executables (*.exe);;All files (*)')
         if not exe:return
         detected=heap_from_cfg(exe)
-        heap_gib,ok=QtWidgets.QInputDialog.getDouble(self,'Fiji Java Heap setting',
+        heap_gib,ok=QtWidgets.QInputDialog.getDouble(self,'ImageJ/Fiji Java Heap setting',
             'Maximum Java heap (GiB, not installed RAM).\n'
             'Use the value set in Fiji: Edit → Options → Memory & Threads.\n'
             'Cancel if unknown; do not guess from the PC RAM:',
@@ -2579,21 +2797,21 @@ class MainWindow(QtWidgets.QMainWindow):
                 text=f'Fiji import completed: {count} / {requested} slices'
                 if warnings:
                     text+=f' · {len(warnings)} ROI warning(s) (see Fiji Log)'
-                    QtWidgets.QMessageBox.warning(self,'Fiji ROI transfer warnings','\n'.join(warnings))
+                    QtWidgets.QMessageBox.warning(self,'ImageJ/Fiji ROI transfer warnings','\n'.join(warnings))
                 self.statusBar().showMessage(text,16000)
                 log_action('Fiji image import completed',frames=count)
             else:
                 message=status.get('error','Unknown Fiji error')
                 log_action('Fiji image import failed',details=str(message)[:120])
-                QtWidgets.QMessageBox.warning(self,'Fiji import failed',str(message))
+                QtWidgets.QMessageBox.warning(self,'ImageJ/Fiji import failed',str(message))
         elif state=='LOADING':
-            self.statusBar().showMessage(f'Fiji importing: {count} / {requested} slices')
+            self.statusBar().showMessage(f'ImageJ/Fiji importing: {count} / {requested} slices')
         else:
-            self.statusBar().showMessage('Fiji accepted import request; waiting for processing…')
+            self.statusBar().showMessage('ImageJ/Fiji accepted import request; waiting for processing…')
         if _time.monotonic()-started > 600 and state not in ('COMPLETED','FAILED'):
             self._fiji_job_timer.stop()
             self._pending_fiji_job=None
-            self.statusBar().showMessage('Fiji completion not confirmed (timed out). Check Fiji.',20000)
+            self.statusBar().showMessage('ImageJ/Fiji completion not confirmed (timed out). Check Fiji.',20000)
 
     def _launch_imagej(self,executable,macro,source_paths=None,transfer=None):
         """Receiver -> ImageJ1 RMI -> launch only when no Fiji exists.
@@ -2718,7 +2936,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QDialogButtonBox.StandardButton.Ok |
             QtWidgets.QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setText(
-            'Next…' if sequence else 'Open in Fiji')
+            'Next…' if sequence else 'Open in ImageJ')
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         layout.addWidget(buttons)
@@ -3028,6 +3246,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(f'Copied {len(targets)} ROIs: {origin.display_name} → {target.display_name}',7000)
 
     def open_orthogonal_view(self):
+        panel=self._active_panel
+        if panel and panel.files and parse_his_ref(panel.files[0]):
+            QtWidgets.QMessageBox.information(self,'Orthogonal View',
+                'HIS contains 2D X-ray projections, not reconstructed CT slices.\n'
+                'Open reconstructed TIFF slices to use Orthogonal View.')
+            return
         """Open lazy CT-only workspace without changing any comparison state."""
         panel=self._active_panel
         if not panel.files or panel.current is None:

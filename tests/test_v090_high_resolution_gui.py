@@ -19,7 +19,7 @@ def test_gui_integration_contract_without_qt():
     assert 'self.hr_widget.dispose()' in src
     assert 'self.preview_report_button.setVisible(is_preview)' in src
     assert 'QtCore.QTimer.singleShot(0,self.close)' in src
-    for marker in ('scan_series(paths, cancelled=cancel.is_set',
+    for marker in ('scan_series(paths, pixel_size_um=xy_um, cancelled=cancel.is_set',
                    'result=extract_plane(series,plane=plane',
                    'self._signals.completed.emit',
                    'self._cancel.set()',
@@ -61,5 +61,5 @@ def test_v090_gui_real_when_qt_available(tmp_path):
     assert child._result is not None
     assert np.array_equal(child._image_data[0],tifffile.imread(paths[0])[6,:])
     assert child._result.metadata['fixed_index_px']==6
-    assert APP_VERSION=='0.9.6'
+    assert APP_VERSION=='0.9.8d'
     dialog.close(); app.processEvents()

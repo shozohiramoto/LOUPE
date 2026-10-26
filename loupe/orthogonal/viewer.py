@@ -15,9 +15,11 @@ from PySide6 import QtCore, QtWidgets, QtGui
 import pyqtgraph as pg
 from .cache import build_preview, cache_metadata, cache_paths, preview_planes, validate_ct_series
 from .scalebar import scale_bar_spec, scale_bar_label
+from .image_buffers import qt_owned_plane
 from .high_resolution_widget import HighResolutionWidget
 from ..io import load_frame, display_limits
 from ..output_paths import suggested_path
+from ..diagnostics import logger
 from ..version import APP_VERSION
 
 
@@ -44,7 +46,16 @@ class OrthogonalDialog(QtWidgets.QDialog):
         self.resize(1120, 800)
         self.setMinimumSize(710, 470)
         self._cancel = threading.Event()
-        self._pool = ThreadPoolExecutor(max_workers=2)
+        self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='LOUPE-OrthoPreview')
+        self._futures = set()
+        self._future_lock = threading.Lock()
+        self._shutdown_started = False
+        self._ready_to_close = False
+        self._close_poll = QtCore.QTimer(self)
+        self._close_poll.setInterval(75)
+        self._close_poll.timeout.connect(self._poll_close)
+        self._preview_attempt = 0
+        self._trace_first_render = False
         self._signals = _WorkerSignals(self)
         self._signals.progress.connect(self._on_progress)
         self._signals.ready.connect(self._on_ready)
@@ -277,33 +288,74 @@ class OrthogonalDialog(QtWidgets.QDialog):
             self.resize(min(self.width(),max(710,area.width()-16)), min(self.height(),self.maximumHeight()))
         self._start_preview()
 
+    def _submit(self, work):
+        """Track every job so Qt-owned signals outlive the executor workers."""
+        if self._cancel.is_set() or self._shutdown_started:
+            return None
+        with self._future_lock:
+            future = self._pool.submit(work)
+            self._futures.add(future)
+        def finished(done):
+            with self._future_lock:
+                self._futures.discard(done)
+        future.add_done_callback(finished)
+        return future
+
     def _start_preview(self):
         self.view_selector.setEnabled(False)
         self.preview_report_button.setEnabled(False)
+        self._preview_attempt += 1
+        attempt = self._preview_attempt
+        # Immutable capture: changing VIEW cannot race a background worker.
+        paths = tuple(self.paths)
+        logger().info('[PREVIEW_STAGE] attempt=%s start frames=%s', attempt, len(paths))
         def task():
             try:
-                m, path=build_preview(self.paths,
-                    on_progress=lambda n,total:self._signals.progress.emit(n,total),
+                logger().info('[PREVIEW_STAGE] attempt=%s cache.build.begin', attempt)
+                m, path = build_preview(paths,
+                    on_progress=lambda n,total:self._signals.progress.emit(n,total)
+                        if not self._cancel.is_set() else None,
                     cancelled=self._cancel.is_set)
-                if not self._cancel.is_set():self._signals.ready.emit(m,str(path))
+                logger().info('[PREVIEW_STAGE] attempt=%s cache.build.done shape=%s',
+                              attempt, m.get('shape'))
+                if not self._cancel.is_set():
+                    logger().info('[PREVIEW_STAGE] attempt=%s signal.ready.emit', attempt)
+                    self._signals.ready.emit(m,str(path))
             except InterruptedError:
-                pass
-            except Exception as exc:
-                if not self._cancel.is_set():self._signals.error.emit(str(exc))
-        self._pool.submit(task)
+                logger().info('[PREVIEW_STAGE] attempt=%s cancelled',attempt)
+            except Exception:
+                logger().exception('[PREVIEW_STAGE] attempt=%s failed',attempt)
+                if not self._cancel.is_set():
+                    self._signals.error.emit('Preview cache generation failed; see Bug Report')
+        self._submit(task)
 
     def _on_progress(self,n,total):
+        if self._cancel.is_set() or self._shutdown_started:return
         self._bar.setValue(int(100*n/total))
         self._status.setText(f'Building preview cache: {n} / {total} source slices…')
 
     def _on_error(self,msg):
+        if self._cancel.is_set():return
+        logger().error('[PREVIEW_STAGE] gui.error: %s',msg)
         self._status.setText('Preview unavailable: '+msg)
         self.view_selector.setEnabled(True)
         QtWidgets.QMessageBox.warning(self,'Orthogonal preview',msg)
 
     def _on_ready(self,m,path):
-        if self._cancel.is_set():return
+        if self._cancel.is_set() or self._shutdown_started:
+            return
+        try:
+            self._install_preview(m,path)
+        except Exception:
+            logger().exception('[PREVIEW_STAGE] gui.install.failed')
+            self._on_error('Preview display failed; see Bug Report for traceback')
+
+    def _install_preview(self,m,path):
+        if self._cancel.is_set() or self._shutdown_started:return
+        logger().info('[PREVIEW_STAGE] gui.ready.begin')
+        logger().info('[PREVIEW_STAGE] gui.cache.map.begin')
         self._volume=np.load(path, mmap_mode='r', allow_pickle=False)
+        logger().info('[PREVIEW_STAGE] gui.cache.map.done shape=%s',self._volume.shape)
         self._metadata=m
         h,w=m['source_shape']
         for axis, maximum in [('X',w-1),('Y',h-1)]:
@@ -319,8 +371,15 @@ class OrthogonalDialog(QtWidgets.QDialog):
         self.hr_yz.setEnabled(True);self.hr_zx.setEnabled(True)
         self._status.setText(f'Preview ready | {self._volume.shape} | '
                              f'{self._volume.nbytes / 2**20:.1f} MiB cache | source is read-only')
-        self._render()
+        logger().info('[PREVIEW_STAGE] gui.preview.render.begin')
+        self._trace_first_render = True
+        try:
+            self._render()
+        finally:
+            self._trace_first_render = False
+        logger().info('[PREVIEW_STAGE] gui.preview.render.done')
         self._read_xy(self._selected_z)
+        logger().info('[PREVIEW_STAGE] gui.ready.done')
 
     def _nearest(self,axis,value):
         values=np.asarray(self._metadata[f'samples_{axis}'])
@@ -328,9 +387,19 @@ class OrthogonalDialog(QtWidgets.QDialog):
 
     def _set_image(self,name,arr,rect):
         image=self._images[name]
-        lo,hi=display_limits(arr)
-        image.setImage(arr,autoLevels=False,levels=(lo,hi))
+        # ID098-20: a YZ/ZX plane sliced from a read-only 3D memmap is
+        # non-contiguous (and may hold a fragile mmap view). Let pyqtgraph/Qt
+        # own a contiguous copy; do not expose strided mmap memory to Qt's
+        # native image renderer. Maximum per preview plane is 256^2 float32.
+        safe = qt_owned_plane(arr)
+        if self._trace_first_render:
+            logger().info('[PREVIEW_STAGE] gui.image.%s.begin shape=%s dtype=%s',
+                          name,safe.shape,safe.dtype)
+        lo,hi=display_limits(safe)
+        image.setImage(safe,autoLevels=False,levels=(lo,hi))
         image.setRect(QtCore.QRectF(*rect))
+        if self._trace_first_render:
+            logger().info('[PREVIEW_STAGE] gui.image.%s.done',name)
 
     def _render(self):
         if self._volume is None:return
@@ -407,12 +476,13 @@ class OrthogonalDialog(QtWidgets.QDialog):
             try:
                 arr=load_frame(path)
                 if not self._cancel.is_set():self._signals.xy_ready.emit(token,arr)
-            except Exception as exc:
-                if not self._cancel.is_set():self._signals.error.emit(f'XY slice: {exc}')
-        self._pool.submit(task)
+            except Exception:
+                logger().exception('[PREVIEW_STAGE] XY worker error')
+                if not self._cancel.is_set():self._signals.error.emit('XY slice read failed; see Bug Report')
+        self._submit(task)
 
     def _on_xy_ready(self,token,arr):
-        if self._cancel.is_set() or token!=self._xy_token:return
+        if self._cancel.is_set() or self._shutdown_started or token!=self._xy_token:return
         if tuple(arr.shape)!=tuple(self._metadata['source_shape']):
             self._on_error('XY slice dimensions changed from those of the preview')
             return
@@ -437,6 +507,7 @@ class OrthogonalDialog(QtWidgets.QDialog):
         self.tabs.setCurrentWidget(self.hr_widget)
 
     def _high_res_busy_changed(self,busy):
+        if self._shutdown_started:return
         self.view_selector.setEnabled(not busy and self._volume is not None)
         self.hr_yz.setEnabled(not busy and self._volume is not None)
         self.hr_zx.setEnabled(not busy and self._volume is not None)
@@ -609,14 +680,34 @@ class OrthogonalDialog(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, 'Orthogonal report', str(exc))
 
-    def closeEvent(self,event):
-        if self.hr_widget.busy:
-            self._closing_for_high_res=True
-            self.hr_widget.stop()
-            event.ignore()
+    def _poll_close(self):
+        """Finish Qt shutdown only after Python workers stop using signals."""
+        with self._future_lock:
+            active=bool(self._futures)
+        if self.hr_widget.busy or active:
             return
+        self._close_poll.stop()
+        # No worker can emit after this point. Avoid GUI-thread waits during IO.
+        self._pool.shutdown(wait=True, cancel_futures=True)
         self.hr_widget.dispose()
-        self._cancel.set()
-        self._xy_debounce.stop()
-        self._pool.shutdown(wait=False,cancel_futures=True)
-        super().closeEvent(event)
+        self._ready_to_close=True
+        logger().info('[PREVIEW_STAGE] close.workers.joined')
+        self.close()
+
+    def closeEvent(self,event):
+        if self._ready_to_close:
+            super().closeEvent(event)
+            return
+        if not self._shutdown_started:
+            logger().info('[PREVIEW_STAGE] close.requested')
+            self._shutdown_started=True
+            self._cancel.set()
+            self._xy_debounce.stop()
+            self.view_selector.setEnabled(False)
+            self.hr_widget.stop()
+            self._pool.shutdown(wait=False,cancel_futures=True)
+            self._status.setText('Closing: cancelling image workers safely…')
+            self._close_poll.start()
+        event.ignore()
+        # Poll soon even if there were no workers on initial close.
+        QtCore.QTimer.singleShot(0,self._poll_close)

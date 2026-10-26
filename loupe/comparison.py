@@ -4,7 +4,7 @@ import math
 
 MAX_PANELS = 4
 TIFF_EXTENSIONS = frozenset(('.tif', '.tiff'))
-IMAGE_EXTENSIONS = TIFF_EXTENSIONS | frozenset(('.img',))
+IMAGE_EXTENSIONS = TIFF_EXTENSIONS | frozenset(('.img', '.his'))
 
 
 def normalize_pixel_size(calibration):
@@ -33,11 +33,11 @@ def panel_indices_for_drop(start, count, maximum=MAX_PANELS):
 
 
 def is_supported_drop_path(path):
-    """Accept TIFF or BL09W IMG files and folders containing either."""
+    """Accept TIFF, BL09W IMG or HIS files and folders containing either."""
     p = Path(path)
     try:
         return p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS or (p.is_dir() and
-            any(item.is_file() and item.suffix.lower() in IMAGE_EXTENSIONS for item in p.iterdir()))
+            any(item.is_file() and item.suffix.lower() in (TIFF_EXTENSIONS | frozenset(('.img',))) for item in p.iterdir()))
     except (OSError, PermissionError):
         return False
 

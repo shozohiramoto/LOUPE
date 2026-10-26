@@ -204,19 +204,12 @@ def _read_frame(path: Path, mode: str):
         raise ValueError("read_mode must be auto, memmap or decode")
     if mode != "decode":
         try:
-            arr = tifffile.memmap(path)
+            arr = tifffile.memmap(path, mode="r")
             return arr, arr if isinstance(arr, np.memmap) else None
         except (ValueError, TypeError, OSError):
             if mode == "memmap":
                 raise
     return tifffile.imread(path), None
-
-
-def _closed(memmap: Optional[np.memmap]) -> None:
-    if memmap is not None:
-        mm = getattr(memmap, "_mmap", None)
-        if mm is not None:
-            mm.close()
 
 
 def extract_plane(series: CTSeries, *, plane: str, fixed_index: int,
@@ -314,9 +307,10 @@ def extract_plane(series: CTSeries, *, plane: str, fixed_index: int,
             except (OSError, tifffile.TiffFileError) as exc:
                 raise SeriesValidationError(f"Failed to decode {path.name}: {exc}") from exc
             finally:
-                if frame is not None:
-                    del frame
-                _closed(backing)
+                # The array owns its mmap. Releasing both references lets NumPy
+                # close the mapping after no outstanding ndarray views remain.
+                # Never call private _mmap.close() while the memmap is alive.
+                del frame, backing
             stat = path.stat()
             if (stat.st_size, stat.st_mtime_ns) != expected_signature:
                 raise SeriesValidationError(f"CT source changed during extraction: {path.name}")

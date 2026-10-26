@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 APP_NAME = "LOUPE"
-APP_VERSION = "0.9.7"
+APP_VERSION = "0.9.8d"
 APP_STATUS = "Development"  # Not a validated public 1.0.0 release.
 UI_STANDARD_VERSION = "1.0"  # Separate UI design standard, not app SemVer.
 

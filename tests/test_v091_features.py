@@ -14,7 +14,7 @@ VIEW=(ROOT/'loupe/orthogonal/viewer.py').read_text(encoding='utf-8')
 REPORT=(ROOT/'loupe/report.py').read_text(encoding='utf-8')
 
 def test_v091_identity_and_branding():
-    assert APP_VERSION=='0.9.6'
+    assert APP_VERSION=='0.9.8d'
     assert APP_STATUS=='Development'
     assert 'Photon Science Innovation Center (PhoSIC)' in GUI
     assert 'UI Standard v{UI_STANDARD_VERSION}' in GUI

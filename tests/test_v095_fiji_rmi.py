@@ -13,7 +13,7 @@ GUI=(ROOT/'loupe'/'gui.py').read_text(encoding='utf-8')
 
 
 def test_release_and_unmodified_094_features():
-    assert APP_VERSION=='0.9.6'
+    assert APP_VERSION=='0.9.8d'
     ast.parse(GUI)
     assert 'self._pending_fiji_job=(job,_time.monotonic())' in GUI
     assert 'source_paths=selected' in GUI

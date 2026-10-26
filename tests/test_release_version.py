@@ -10,14 +10,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_version_single_source():
-    assert __version__ == VERSION == APP_VERSION == "0.9.7"
+    assert __version__ == VERSION == APP_VERSION == "0.9.8d"
     assert APP_STATUS == "Development"
 
 
 def test_build_stamp_optional_and_stable():
     meta = build_info()
     assert "build_utc" in meta and "git_commit" in meta
-    assert "LOUPE v0.9.7" in release_identity()
+    assert "LOUPE v0.9.8d" in release_identity()
 
 
 def test_ui_theme_remains_independent_of_app_version():

@@ -117,3 +117,26 @@ QPushButton#LOUPE_OrthogonalOutputButton:disabled {
     color: #BEC5CF;
     border-color: #566A80;
 }
+
+/* ID098-08a (v0.9.8b): visible, persistent editing state.
+   Color is never the only indicator: button shows ON and VIEW badges show EDIT. */
+QPushButton#LOUPE_AdjustOffsets:checked {
+    background-color: #F3B354;
+    border: 2px solid #FFE0A0;
+    color: #192331;
+    font-weight: 700;
+}
+QPushButton#LOUPE_AdjustOffsets:checked:hover {
+    background-color: #FFD083;
+}
+QGraphicsView#LOUPE_OffsetPlot[adjustingOffset="true"] {
+    border: 3px solid #F3B354;
+}
+QLabel#LOUPE_OffsetEditBadge {
+    color: #192331;
+    background-color: #F3B354;
+    border: 1px solid #FFE0A0;
+    border-radius: 2px;
+    padding: 3px 6px;
+    font-weight: 700;
+}

@@ -11,7 +11,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def test_release_and_shared_editor_contract():
-    assert APP_VERSION=='0.9.6'
+    assert APP_VERSION=='0.9.8d'
     ctrl=(ROOT/'loupe/orthogonal/roi_controller.py').read_text(encoding='utf8')
     hr=(ROOT/'loupe/orthogonal/high_resolution_widget.py').read_text(encoding='utf8')
     for source in (ctrl,hr):ast.parse(source)

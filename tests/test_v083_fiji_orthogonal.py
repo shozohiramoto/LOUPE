@@ -14,7 +14,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def test_release_number():
-    assert APP_VERSION == '0.9.6'
+    assert APP_VERSION == '0.9.8d'
 
 
 @pytest.mark.parametrize('title', ['Fiji - エクスプローラー', 'Fiji - File Explorer',

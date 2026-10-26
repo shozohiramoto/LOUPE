@@ -9,6 +9,7 @@ import re
 import sys
 import uuid
 import zipfile
+import faulthandler
 
 from .version import APP_VERSION, APP_STATUS, UI_STANDARD_VERSION, build_info, release_identity
 
@@ -18,6 +19,7 @@ _LOGGER = logging.getLogger('LOUPE')
 _LOGGER.addHandler(logging.NullHandler())
 _ROOT = None
 _PREV_CRASH = False
+_FAULT_FILE = None
 
 
 def log_root():
@@ -46,6 +48,34 @@ def start_logging(root=None):
     if _PREV_CRASH: _LOGGER.warning('Previous session may have terminated abnormally')
     purge_old_logs(root)
     return root
+
+
+def start_fault_diagnostics(root=None):
+    """Keep crash trace FD open for the entire process; Windows access faults
+    may bypass sys.excepthook. This is local-only and contains local paths.
+    """
+    global _FAULT_FILE
+    if _FAULT_FILE is not None:
+        return
+    target=Path(root) if root else (_ROOT or log_root())
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        _FAULT_FILE=(target / f'LOUPE_{SESSION}_fatal.log').open('a',encoding='utf-8',buffering=1)
+        faulthandler.enable(file=_FAULT_FILE,all_threads=True)
+        _LOGGER.info('Native crash traceback capture enabled (local diagnostic log)')
+    except (OSError, RuntimeError, ValueError):
+        _LOGGER.exception('Native traceback capture could not be enabled')
+        if _FAULT_FILE is not None:
+            _FAULT_FILE.close()
+            _FAULT_FILE=None
+
+
+def close_fault_diagnostics():
+    global _FAULT_FILE
+    if _FAULT_FILE is not None:
+        faulthandler.disable()
+        _FAULT_FILE.close()
+        _FAULT_FILE=None
 
 
 def purge_old_logs(root, days=30):
@@ -112,10 +142,27 @@ def create_bug_report(destination, description='', expected='', include_logs=Tru
         archive.writestr('report.txt', '\n'.join(manifest))
         if include_logs:
             for filename, target in [(f'LOUPE_{SESSION}.log','loupe.log'),
-                                     (f'LOUPE_{SESSION}_errors.log','error.log')]:
+                                     (f'LOUPE_{SESSION}_errors.log','error.log'),
+                                     (f'LOUPE_{SESSION}_fatal.log','fatal.log')]:
                 source=root/filename
                 if source.exists():
                     archive.writestr(target, sanitize(source.read_text(encoding='utf-8',errors='replace')))
+        if include_logs:
+            # The current session is usually a RESTART after a fatal Windows
+            # APPCRASH. Preserve the two previous sessions too (bounded).
+            old_logs = sorted(
+                (p for p in root.glob('LOUPE_*.log')
+                 if p.name != f'LOUPE_{SESSION}.log' and not p.stem.endswith('_errors')),
+                key=lambda p: p.stat().st_mtime, reverse=True,
+            )[:2]
+            for prior in old_logs:
+                for prior_file in (prior, prior.with_name(prior.stem + '_errors.log'),
+                                   prior.with_name(prior.stem + '_fatal.log')):
+                    if prior_file.is_file():
+                        archive.writestr(
+                            'previous_sessions/' + prior_file.name,
+                            sanitize(prior_file.read_text(encoding='utf-8', errors='replace')),
+                        )
         if include_environment:
             env=(f'{release_identity()}\nUI Standard: {UI_STANDARD_VERSION}\n'
                  f'OS: {platform.system()} {platform.release()}\nPython: {platform.python_version()}\n')

@@ -16,7 +16,7 @@ HR=(ROOT/'loupe/orthogonal/high_resolution_widget.py').read_text(encoding='utf-8
 
 
 def test_release_identity_and_ui_contract():
-    assert APP_VERSION=='0.9.6'
+    assert APP_VERSION=='0.9.8d'
     for name in ('Session ▾','Report ▾','Export ▾','Linked profiles','Pan / Zoom',
                  'Save Session…','Open Session…','Profile Data (CSV)…',
                  'ROI Measurements (CSV)…'):

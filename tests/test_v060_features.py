@@ -14,7 +14,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def test_version_identity():
-    assert APP_VERSION == '0.9.6'
+    assert APP_VERSION == '0.9.8d'
     assert '0.8.2' in (ROOT/'CHANGELOG.md').read_text(encoding='utf-8')
 
 

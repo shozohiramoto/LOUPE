@@ -17,7 +17,7 @@ CAL=(ROOT/'loupe/calibration_spin.py').read_text(encoding='utf8')
 
 
 def test_release_and_compilable_gui_modules():
-    assert APP_VERSION=='0.9.6'
+    assert APP_VERSION=='0.9.8d'
     for code in (GUI,HR,CAL):
         ast.parse(code)
     assert 'self.secondary_toolbar_row.addWidget(self.profile_source)' not in GUI

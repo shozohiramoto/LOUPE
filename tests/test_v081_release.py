@@ -35,7 +35,7 @@ def _manifest(folder,port):
 
 
 def test_v081_version():
-    assert APP_VERSION=='0.9.6'
+    assert APP_VERSION=='0.9.8d'
 
 
 @pytest.mark.parametrize('reply',[b'QUEUED\n',b'QUEUED\r\n',b'QUEUED\r\n  '])

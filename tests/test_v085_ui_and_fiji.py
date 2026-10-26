@@ -9,7 +9,7 @@ CSS=(ROOT/'bl09w_ui/qt_theme.qss').read_text(encoding='utf-8')
 
 
 def test_version():
-    assert APP_VERSION=='0.9.6'
+    assert APP_VERSION=='0.9.8d'
 
 
 def test_toolbar_two_level_structure():

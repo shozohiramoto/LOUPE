@@ -24,7 +24,7 @@ import pyqtgraph as pg
 from ..io import display_limits
 from ..profiles import sample_thick_line
 from ..calibration_spin import CalibrationSpinBox
-from ..diagnostics import log_action
+from ..diagnostics import log_action, logger
 from .high_resolution import scan_series, extract_plane, ExtractionCancelled
 from .scalebar import scale_bar_spec, scale_bar_label
 from .report_provenance import orthogonal_provenance_lines
@@ -157,6 +157,7 @@ class HighResolutionWidget(QtWidgets.QWidget):
         self.image = pg.ImageItem(axisOrder='row-major')
         self.plot.addItem(self.image)
         self.plot.setMinimumSize(220, 230)
+        self.plot.setToolTip('Mouse wheel: zoom  |  Middle-button drag: pan  |  Left drag: ROI tool / pan')
         self.plot.scene().sigMouseMoved.connect(self._mouse_moved)
         self.plot.getViewBox().sigRangeChanged.connect(self._update_scale_bar)
         self.bar = pg.PlotCurveItem(pen=pg.mkPen('#ffffff', width=3))
@@ -180,6 +181,7 @@ class HighResolutionWidget(QtWidgets.QWidget):
                                     'Ellipse / Circle (px)', 'Count 1, 2, 3…'))
         self.profile_mode.currentIndexChanged.connect(self._mode_changed)
         self.pan_button=QtWidgets.QPushButton('Pan / Zoom')
+        self.pan_button.setToolTip('Middle-button drag pans the image in any ROI mode')
         self.pan_button.setCheckable(True);self.pan_button.setChecked(True)
         self.pan_button.clicked.connect(self._select_pan)
         self.return_to_pan=QtGui.QShortcut(QtGui.QKeySequence('Esc'),self)
@@ -426,6 +428,7 @@ class HighResolutionWidget(QtWidgets.QWidget):
 
         def run():
             try:
+                logger().info('[NATIVE_STAGE] job=%s scan.begin plane=%s z_count=%d', token, plane, stop-start)
                 series=scan_series(paths, pixel_size_um=xy_um, cancelled=cancel.is_set,
                     on_progress=lambda n,total:self._signals.progress.emit(token,'Scanning headers',n,total))
                 if series.pixel_size_um is None and self._pixel_size_um is not None:
@@ -433,23 +436,29 @@ class HighResolutionWidget(QtWidgets.QWidget):
                     # original data. Quantitative intensity remains valid but
                     # no physical dimensions are recorded in the TIFF.
                     pass
+                logger().info('[NATIVE_STAGE] job=%s scan.done shape=%s dtype=%s', token, series.shape, series.dtype)
                 result=extract_plane(series,plane=plane,fixed_index=native_idx,
                     z_start=start,z_stop=stop,z_spacing_um=z_um,
                     output_dir=temp_folder,cancelled=cancel.is_set,
                     on_progress=lambda n,total:self._signals.progress.emit(token,'Extracting original pixels',n,total))
                 if cancel.is_set():
                     raise ExtractionCancelled('Stopped')
+                logger().info('[NATIVE_STAGE] job=%s extract.done output_shape=%s',token,result.shape)
                 data=tifffile.imread(result.tiff_path)
+                logger().info('[NATIVE_STAGE] job=%s tiff.read.done shape=%s dtype=%s',token,data.shape,data.dtype)
                 if cancel.is_set():
                     raise ExtractionCancelled('Stopped')
                 self._signals.completed.emit(token,result,data)
             except ExtractionCancelled:
+                logger().info('[NATIVE_STAGE] job=%s cancelled', token)
                 self._signals.failed.emit(token,'Stopped by operator',True)
             except Exception as exc:
+                logger().exception('[NATIVE_STAGE] job=%s failed', token)
                 self._signals.failed.emit(token,str(exc),False)
-        self._pool.submit(run)
+        # Persist the request before the worker can start (or crash).
         log_action('Native Section orthogonal requested',plane=plane,fixed_index=native_idx,
                    z_start=start,z_stop=stop,frames=len(paths))
+        self._pool.submit(run)
 
     def stop(self):
         if self._cancel is not None and self._busy:
@@ -470,11 +479,14 @@ class HighResolutionWidget(QtWidgets.QWidget):
             self._discard_files(result)
             self._on_failed(token,'Stopped by operator',True)
             return
+        logger().info('[NATIVE_STAGE] job=%s gui.install.begin', token)
         self._result=result
         self._image_data=data
         self._scale=(result.metadata.get('horizontal_spacing_um'), result.metadata.get('vertical_z_spacing_um'))
         lower,upper=display_limits(data)
+        logger().info('[NATIVE_STAGE] job=%s gui.image.set.begin',token)
         self.image.setImage(data,autoLevels=False,levels=(lower,upper))
+        logger().info('[NATIVE_STAGE] job=%s gui.image.set.done',token)
         self.image.setRect(QtCore.QRectF(0,0,data.shape[1],data.shape[0]))
         self.plot.getViewBox().autoRange(padding=0.015)
         self._set_busy(False)
@@ -484,7 +496,9 @@ class HighResolutionWidget(QtWidgets.QWidget):
         self.report_menu.setEnabled(True)
         self.png_action.setEnabled(True);self.pdf_action.setEnabled(True)
         self._undo_stack=[];self._redo_stack=[]
+        logger().info('[NATIVE_STAGE] job=%s gui.roi.set.begin',token)
         self.roi_layer.set_image(data)
+        logger().info('[NATIVE_STAGE] job=%s gui.roi.set.done',token)
         self._update_measurement()
         z0=result.metadata['z_start_zero_based_inclusive'];z1=result.metadata['z_stop_zero_based_exclusive']
         self.details.setText(f"{result.metadata['plane']} · {result.metadata['fixed_axis']}="

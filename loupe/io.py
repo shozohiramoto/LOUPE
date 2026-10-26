@@ -4,7 +4,7 @@ import tifffile
 
 TIFF_EXTS = frozenset(('.tif', '.tiff'))
 IMG_EXTS = frozenset(('.img',))
-EXTS = TIFF_EXTS | IMG_EXTS
+EXTS = TIFF_EXTS | IMG_EXTS | frozenset(('.his',))
 
 
 def discover(path):
@@ -14,7 +14,14 @@ def discover(path):
     selections prefer TIFF when both TIFF and IMG intermediates exist; select a
     specific IMG file to request the IMG sequence instead.
     """
+    from .his_format import inspect_his, his_ref, parse_his_ref
+    virtual = parse_his_ref(path)
+    if virtual:
+        path = virtual[0]
     path = Path(path)
+    if path.is_file() and path.suffix.lower() == '.his':
+        info = inspect_his(path)
+        return [his_ref(path, i) for i in range(info['frames'])], (virtual[1] if virtual else 0)
     if path.is_file() and path.suffix.lower() in EXTS:
         family = IMG_EXTS if path.suffix.lower() in IMG_EXTS else TIFF_EXTS
         files = sorted(p for p in path.parent.iterdir()
@@ -23,6 +30,7 @@ def discover(path):
         contents = [p for p in path.iterdir() if p.is_file()]
         tiffs = sorted(p for p in contents if p.suffix.lower() in TIFF_EXTS)
         imgs = sorted(p for p in contents if p.suffix.lower() in IMG_EXTS)
+        # Directory auto-discovery deliberately does not choose raw .his; select it explicitly.
         files = tiffs if tiffs else imgs
     else:
         raise ValueError('Select a TIFF/IMG image or folder containing supported images')
@@ -32,6 +40,9 @@ def discover(path):
 
 
 def load_frame(path):
+    from .his_format import parse_his_ref, read_his_frame
+    if parse_his_ref(path):
+        return read_his_frame(path)
     path = Path(path)
     if path.suffix.lower() in IMG_EXTS:
         from .img_format import read_img
@@ -82,7 +93,11 @@ def resolve_image_levels(arr, *, auto=True, manual=None, auto_levels=None):
 
 
 def estimate_frame_bytes(path):
-    """Estimate frame size from TIFF/IMG header for bounded prefetch."""
+    """Estimate frame size from TIFF/IMG/HIS header for bounded prefetch."""
+    from .his_format import parse_his_ref, inspect_his
+    parsed = parse_his_ref(path)
+    if parsed:
+        return inspect_his(parsed[0])['bytes_per_frame']
     path = Path(path)
     if path.suffix.lower() in IMG_EXTS:
         from .img_format import inspect_img
